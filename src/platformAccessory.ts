@@ -19,6 +19,10 @@ export class SmartlightAccessory {
   private lastState: ClimateStateResponse | null = null;
   private pendingCommand: Partial<ClimateCommandData> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Track the HomeKit-side target mode separately from the device mode.
+  // The device always reports mode=1 (HeatCool) regardless of cool/heat/auto,
+  // so we can't derive the HomeKit mode from device state.
+  private homeKitTargetMode: number;
 
   constructor(
     private readonly platform: SmartlightPlatform,
@@ -26,6 +30,7 @@ export class SmartlightAccessory {
     entity: ClimateEntity,
   ) {
     this.entity = entity;
+    this.homeKitTargetMode = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
 
     // Accessory information
     const infoService = this.accessory.getService(this.platform.Service.AccessoryInformation)!;
@@ -143,17 +148,7 @@ export class SmartlightAccessory {
   }
 
   private getTargetState(): CharacteristicValue {
-    if (!this.lastState) {
-      return this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
-    }
-    switch (this.lastState.mode) {
-      case ClimateMode.Cool:
-        return this.platform.Characteristic.TargetHeaterCoolerState.COOL;
-      case ClimateMode.Heat:
-        return this.platform.Characteristic.TargetHeaterCoolerState.HEAT;
-      default:
-        return this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
-    }
+    return this.homeKitTargetMode;
   }
 
   private getCurrentTemperature(): CharacteristicValue {
@@ -164,7 +159,7 @@ export class SmartlightAccessory {
     if (!this.lastState) {
       return this.minTemp;
     }
-    if (this.lastState.mode === ClimateMode.Heat) {
+    if (this.homeKitTargetMode === this.platform.Characteristic.TargetHeaterCoolerState.HEAT) {
       return this.maxTemp;
     }
     return this.clampTemp(this.lastState.targetTemperature);
@@ -174,7 +169,7 @@ export class SmartlightAccessory {
     if (!this.lastState) {
       return this.minTemp;
     }
-    if (this.lastState.mode === ClimateMode.Cool) {
+    if (this.homeKitTargetMode === this.platform.Characteristic.TargetHeaterCoolerState.COOL) {
       return this.minTemp;
     }
     return this.clampTemp(this.lastState.targetTemperature);
@@ -209,6 +204,7 @@ export class SmartlightAccessory {
   }
 
   private setTargetState(value: CharacteristicValue): void {
+    this.homeKitTargetMode = value as number;
     this.sendCommand({ mode: this.targetStateToClimateMode(value as number) });
   }
 
@@ -265,25 +261,25 @@ export class SmartlightAccessory {
       this.getCurrentState(),
     );
 
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.TargetHeaterCoolerState,
-      this.getTargetState(),
-    );
+    // Don't push TargetHeaterCoolerState — the device always reports mode=1
+    // (HeatCool) regardless of cool/heat/auto, so pushing it would override
+    // the user's selection. We track the mode on the HomeKit side instead.
 
     this.heaterCoolerService.updateCharacteristic(
       Characteristic.CurrentTemperature,
       state.currentTemperature,
     );
 
-    // Set thresholds based on mode to prevent HomeKit from collapsing to AUTO.
+    // Set thresholds based on HomeKit-side mode to prevent collapsing to AUTO.
     // The device has a single target temperature, but HomeKit expects two thresholds.
     const target = this.clampTemp(state.targetTemperature);
-    if (state.mode === ClimateMode.Cool) {
+    const { TargetHeaterCoolerState } = Characteristic;
+    if (this.homeKitTargetMode === TargetHeaterCoolerState.COOL) {
       this.heaterCoolerService.updateCharacteristic(
         Characteristic.CoolingThresholdTemperature, target);
       this.heaterCoolerService.updateCharacteristic(
         Characteristic.HeatingThresholdTemperature, this.minTemp);
-    } else if (state.mode === ClimateMode.Heat) {
+    } else if (this.homeKitTargetMode === TargetHeaterCoolerState.HEAT) {
       this.heaterCoolerService.updateCharacteristic(
         Characteristic.HeatingThresholdTemperature, target);
       this.heaterCoolerService.updateCharacteristic(
