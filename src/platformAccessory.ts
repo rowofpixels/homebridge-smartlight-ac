@@ -73,14 +73,14 @@ export class SmartlightAccessory {
       .getCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature);
     coolingChar.updateValue(this.minTemp);
     coolingChar.setProps({ minValue: this.minTemp, maxValue: this.maxTemp, minStep: tempStep });
-    coolingChar.onGet(this.getTargetTemperature.bind(this));
+    coolingChar.onGet(this.getCoolingThreshold.bind(this));
     coolingChar.onSet(this.setTargetTemperature.bind(this));
 
     const heatingChar = this.heaterCoolerService
       .getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature);
     heatingChar.updateValue(this.minTemp);
     heatingChar.setProps({ minValue: this.minTemp, maxValue: this.maxTemp, minStep: tempStep });
-    heatingChar.onGet(this.getTargetTemperature.bind(this));
+    heatingChar.onGet(this.getHeatingThreshold.bind(this));
     heatingChar.onSet(this.setTargetTemperature.bind(this));
 
     // Swing mode
@@ -160,8 +160,24 @@ export class SmartlightAccessory {
     return this.lastState?.currentTemperature ?? 20;
   }
 
-  private getTargetTemperature(): CharacteristicValue {
-    return this.clampTemp(this.lastState?.targetTemperature ?? 22);
+  private getCoolingThreshold(): CharacteristicValue {
+    if (!this.lastState) {
+      return this.minTemp;
+    }
+    if (this.lastState.mode === ClimateMode.Heat) {
+      return this.maxTemp;
+    }
+    return this.clampTemp(this.lastState.targetTemperature);
+  }
+
+  private getHeatingThreshold(): CharacteristicValue {
+    if (!this.lastState) {
+      return this.minTemp;
+    }
+    if (this.lastState.mode === ClimateMode.Cool) {
+      return this.minTemp;
+    }
+    return this.clampTemp(this.lastState.targetTemperature);
   }
 
   private getSwingMode(): CharacteristicValue {
@@ -264,15 +280,25 @@ export class SmartlightAccessory {
       state.currentTemperature,
     );
 
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.CoolingThresholdTemperature,
-      this.clampTemp(state.targetTemperature),
-    );
-
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.HeatingThresholdTemperature,
-      this.clampTemp(state.targetTemperature),
-    );
+    // Set thresholds based on mode to prevent HomeKit from collapsing to AUTO.
+    // The device has a single target temperature, but HomeKit expects two thresholds.
+    const target = this.clampTemp(state.targetTemperature);
+    if (state.mode === ClimateMode.Cool) {
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.CoolingThresholdTemperature, target);
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.HeatingThresholdTemperature, this.minTemp);
+    } else if (state.mode === ClimateMode.Heat) {
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.HeatingThresholdTemperature, target);
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.CoolingThresholdTemperature, this.maxTemp);
+    } else {
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.CoolingThresholdTemperature, target);
+      this.heaterCoolerService.updateCharacteristic(
+        Characteristic.HeatingThresholdTemperature, target);
+    }
 
     if (this.entity.config.supportedSwingModesList?.length > 0) {
       this.heaterCoolerService.updateCharacteristic(
