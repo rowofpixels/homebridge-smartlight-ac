@@ -1,6 +1,6 @@
 {
   "name": "homebridge-smartlight-ac",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Homebridge plugin for Smartlight SLWF-01pro ESPHome AC controllers",
   "license": "ISC",
   "type": "module",
