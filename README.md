@@ -72,6 +72,16 @@ npm run watch   # rebuilds + restarts homebridge on file changes
 
 The `watch` script uses an isolated config at `./test/hbConfig/config.json` so it won't affect a production Homebridge instance.
 
+## Releasing
+
+```bash
+npm version patch   # or minor / major
+git push && git push --tags
+gh release create v<version> --generate-notes
+```
+
+Creating the GitHub Release triggers the publish workflow, which pushes to npm.
+
 ## License
 
 ISC
