@@ -23,6 +23,7 @@
     "build": "rimraf ./dist && tsc",
     "lint": "eslint . --max-warnings=0",
     "watch": "npm run build && npm link && nodemon",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {
