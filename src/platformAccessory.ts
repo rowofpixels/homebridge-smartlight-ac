@@ -102,6 +102,12 @@ export class SmartlightAccessory {
 
     // Listen for state updates from the device
     this.entity.on('state', (state: ClimateStateResponse) => {
+      const logLevel = this.lastState === null ? 'info' : 'debug';
+      const msg =
+        `[${this.accessory.displayName}] State: mode=${state.mode} action=${state.action} ` +
+        `current=${state.currentTemperature}°C target=${state.targetTemperature}°C ` +
+        `fan=${state.fanMode} swing=${state.swingMode}`;
+      this.platform.log[logLevel](msg);
       this.lastState = state;
       this.pushStateToHomeKit(state);
     });
@@ -220,7 +226,7 @@ export class SmartlightAccessory {
 
     this.debounceTimer = setTimeout(() => {
       if (this.pendingCommand) {
-        this.platform.log.debug('Sending command:', JSON.stringify(this.pendingCommand));
+        this.platform.log.info('Sending command:', JSON.stringify(this.pendingCommand));
         this.entity.command(this.pendingCommand);
         this.pendingCommand = null;
       }
