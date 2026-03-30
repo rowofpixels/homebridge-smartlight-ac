@@ -1,0 +1,52 @@
+{
+  "pluginAlias": "SmartlightAC",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Control Midea-family mini-splits via Smartlight SLWF-01pro ESPHome controllers.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "SmartlightAC"
+      },
+      "devices": {
+        "title": "Devices",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Device Name",
+              "type": "string",
+              "required": true
+            },
+            "host": {
+              "title": "Host",
+              "type": "string",
+              "required": true,
+              "description": "IP address or hostname of the SLWF-01pro device"
+            },
+            "port": {
+              "title": "Port",
+              "type": "integer",
+              "default": 6053,
+              "description": "ESPHome native API port"
+            },
+            "password": {
+              "title": "Password",
+              "type": "string",
+              "description": "ESPHome API password (if configured)"
+            },
+            "encryptionKey": {
+              "title": "Encryption Key",
+              "type": "string",
+              "description": "ESPHome API encryption key (base64, if configured)"
+            }
+          }
+        }
+      }
+    }
+  }
+}
