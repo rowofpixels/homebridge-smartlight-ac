@@ -213,12 +213,7 @@ export class SmartlightAccessory {
   }
 
   private setTargetTemperature(value: CharacteristicValue): void {
-    // Include the current mode so the device doesn't reset it
-    const cmd: Omit<ClimateCommandData, 'key'> = { targetTemperature: value as number };
-    if (this.lastState && this.lastState.mode !== ClimateMode.Off) {
-      cmd.mode = this.lastState.mode;
-    }
-    this.sendCommand(cmd);
+    this.sendCommand({ targetTemperature: value as number });
   }
 
   private setSwingMode(value: CharacteristicValue): void {
