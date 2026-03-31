@@ -105,14 +105,18 @@ export class SmartlightAccessory {
         .onSet(this.setRotationSpeed.bind(this));
     }
 
+    // Log supported modes so we can verify the mapping
+    this.platform.log.info(
+      `[${this.accessory.displayName}] Supported modes: ${JSON.stringify(entity.config.supportedModesList)}`,
+    );
+
     // Listen for state updates from the device
     this.entity.on('state', (state: ClimateStateResponse) => {
-      const logLevel = this.lastState === null ? 'info' : 'debug';
-      const msg =
+      this.platform.log.info(
         `[${this.accessory.displayName}] State: mode=${state.mode} action=${state.action} ` +
         `current=${state.currentTemperature}°C target=${state.targetTemperature}°C ` +
-        `fan=${state.fanMode} swing=${state.swingMode}`;
-      this.platform.log[logLevel](msg);
+        `fan=${state.fanMode} swing=${state.swingMode}`,
+      );
       this.lastState = state;
       this.pushStateToHomeKit(state);
     });
