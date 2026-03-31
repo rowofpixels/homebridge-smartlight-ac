@@ -11,6 +11,12 @@
         "type": "string",
         "default": "SmartlightAC"
       },
+      "debug": {
+        "title": "Debug Mode",
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose logging of device state and commands"
+      },
       "devices": {
         "title": "Devices",
         "type": "array",

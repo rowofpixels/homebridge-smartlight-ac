@@ -11,5 +11,6 @@ export interface SmartlightDeviceConfig {
 
 export interface SmartlightPlatformConfig {
   name: string;
+  debug?: boolean;
   devices: SmartlightDeviceConfig[];
 }

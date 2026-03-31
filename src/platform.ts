@@ -16,6 +16,7 @@ import { SmartlightAccessory } from './platformAccessory.js';
 export class SmartlightPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
+  public readonly debugMode: boolean;
 
   private readonly cachedAccessories = new Map<string, PlatformAccessory>();
   private readonly registeredUUIDs = new Set<string>();
@@ -27,6 +28,7 @@ export class SmartlightPlatform implements DynamicPlatformPlugin {
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
+    this.debugMode = config.debug === true;
 
     const devices = (config.devices ?? []) as SmartlightDeviceConfig[];
     if (devices.length === 0) {

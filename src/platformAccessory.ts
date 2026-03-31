@@ -105,18 +105,21 @@ export class SmartlightAccessory {
         .onSet(this.setRotationSpeed.bind(this));
     }
 
-    // Log supported modes so we can verify the mapping
-    this.platform.log.info(
-      `[${this.accessory.displayName}] Supported modes: ${JSON.stringify(entity.config.supportedModesList)}`,
-    );
+    if (this.platform.debugMode) {
+      this.platform.log.info(
+        `[${this.accessory.displayName}] Supported modes: ${JSON.stringify(entity.config.supportedModesList)}`,
+      );
+    }
 
     // Listen for state updates from the device
     this.entity.on('state', (state: ClimateStateResponse) => {
-      this.platform.log.info(
-        `[${this.accessory.displayName}] State: mode=${state.mode} action=${state.action} ` +
-        `current=${state.currentTemperature}°C target=${state.targetTemperature}°C ` +
-        `fan=${state.fanMode} swing=${state.swingMode}`,
-      );
+      if (this.platform.debugMode) {
+        this.platform.log.info(
+          `[${this.accessory.displayName}] State: mode=${state.mode} action=${state.action} ` +
+          `current=${state.currentTemperature}°C target=${state.targetTemperature}°C ` +
+          `fan=${state.fanMode} swing=${state.swingMode}`,
+        );
+      }
       this.lastState = state;
       this.pushStateToHomeKit(state);
     });
@@ -242,7 +245,9 @@ export class SmartlightAccessory {
 
     this.debounceTimer = setTimeout(() => {
       if (this.pendingCommand) {
-        this.platform.log.info('Sending command:', JSON.stringify(this.pendingCommand));
+        if (this.platform.debugMode) {
+          this.platform.log.info('Sending command:', JSON.stringify(this.pendingCommand));
+        }
         this.entity.command(this.pendingCommand);
         this.pendingCommand = null;
       }
