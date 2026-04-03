@@ -30,7 +30,8 @@ export class SmartlightAccessory {
     entity: ClimateEntity,
   ) {
     this.entity = entity;
-    this.homeKitTargetMode = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
+    this.homeKitTargetMode = this.accessory.context.lastTargetMode
+      ?? this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
 
     // Accessory information
     const infoService = this.accessory.getService(this.platform.Service.AccessoryInformation)!;
@@ -202,16 +203,16 @@ export class SmartlightAccessory {
     if (value === this.platform.Characteristic.Active.INACTIVE) {
       this.sendCommand({ mode: ClimateMode.Off });
     } else {
-      // Turn on — restore to last known target state or default to AUTO
-      const targetState = this.heaterCoolerService.getCharacteristic(
-        this.platform.Characteristic.TargetHeaterCoolerState,
-      ).value;
-      this.sendCommand({ mode: this.targetStateToClimateMode(targetState as number) });
+      // Use homeKitTargetMode — it tracks the user's last explicit mode
+      // selection and survives across restarts, unlike the characteristic
+      // cache which can be stale after restart or during rapid callbacks.
+      this.sendCommand({ mode: this.targetStateToClimateMode(this.homeKitTargetMode) });
     }
   }
 
   private setTargetState(value: CharacteristicValue): void {
     this.homeKitTargetMode = value as number;
+    this.accessory.context.lastTargetMode = this.homeKitTargetMode;
     this.sendCommand({ mode: this.targetStateToClimateMode(value as number) });
   }
 
@@ -270,9 +271,13 @@ export class SmartlightAccessory {
       this.getCurrentState(),
     );
 
-    // Don't push TargetHeaterCoolerState — the device always reports mode=1
-    // (HeatCool) regardless of cool/heat/auto, so pushing it would override
-    // the user's selection. We track the mode on the HomeKit side instead.
+    // Push our tracked target mode to keep HomeKit in sync.
+    // (The device always reports mode=1/HeatCool regardless of the actual mode,
+    // so we push the HomeKit-side mode we're tracking instead of the device mode.)
+    this.heaterCoolerService.updateCharacteristic(
+      Characteristic.TargetHeaterCoolerState,
+      this.homeKitTargetMode,
+    );
 
     this.heaterCoolerService.updateCharacteristic(
       Characteristic.CurrentTemperature,
