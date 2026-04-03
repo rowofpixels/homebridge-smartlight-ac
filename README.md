@@ -74,13 +74,13 @@ The `watch` script uses an isolated config at `./test/hbConfig/config.json` so i
 
 ## Releasing
 
-```bash
-npm version patch   # or minor / major
-git push && git push --tags
-gh release create v<version> --generate-notes
+With [Claude Code](https://claude.ai/claude-code) installed:
+
+```
+/release patch    # or minor / major
 ```
 
-Creating the GitHub Release triggers the publish workflow, which pushes to npm.
+This runs lint, build, and tests, bumps the version, pushes to GitHub, and creates a release with user-facing notes that appear in the Homebridge UI. The GitHub Release triggers the publish workflow, which pushes to npm.
 
 ## License
 

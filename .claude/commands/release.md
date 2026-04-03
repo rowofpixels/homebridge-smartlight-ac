@@ -1,18 +1,19 @@
 Release a new version of the plugin to npm via GitHub Releases.
 
-Accepts an optional argument for the version bump type: `patch` (default), `minor`, or `major`.
+Requires an argument for the version bump type: `patch`, `minor`, or `major`. If no argument is provided, stop and ask the user which bump type they want.
 
 Follow these steps in order, stopping immediately if any step fails:
 
 ## 1. Pre-flight checks
 
+- If `$ARGUMENTS` is empty, stop and ask the user: "Which version bump? (`patch`, `minor`, or `major`)"
 - Verify the git working tree is clean (`git status --porcelain` should be empty). If not, stop and tell the user to commit or stash changes first.
 - Verify we're on the `main` branch.
 - Run `npm run lint`, `npm run build`, and `npm test`. If any fail, stop.
 
 ## 2. Bump version
 
-- Run `npm version $ARGUMENTS` (defaults to `patch` if no argument given). This updates package.json, creates a commit, and creates a git tag.
+- Run `npm version $ARGUMENTS`. This updates package.json, creates a commit, and creates a git tag.
 - Read back the new version from package.json.
 
 ## 3. Push to GitHub
