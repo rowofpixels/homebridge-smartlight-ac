@@ -26,10 +26,12 @@
   "scripts": {
     "build": "rimraf ./dist && tsc",
     "lint": "eslint . --max-warnings=0",
-    "watch": "npm run build && npm link && nodemon",
+    "watch": "npm run build && nodemon",
     "prepare": "npm run build",
     "test": "vitest run",
-    "prepublishOnly": "npm run lint && npm run build"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build",
+    "ac": "tsx scripts/ac.ts",
+    "typecheck": "tsc -p tsconfig.check.json"
   },
   "dependencies": {
     "@2colors/esphome-native-api": "^1.3.1"
@@ -41,6 +43,7 @@
     "homebridge": "^2.0.0-beta.0",
     "nodemon": "^3.1.9",
     "rimraf": "^6.0.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
     "vitest": "^4.1.2"

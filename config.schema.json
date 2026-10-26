@@ -15,7 +15,7 @@
         "title": "Debug Mode",
         "type": "boolean",
         "default": false,
-        "description": "Enable verbose logging of device state and commands"
+        "description": "Log device state, every HomeKit change, and the commands sent to the AC"
       },
       "devices": {
         "title": "Devices",
@@ -32,7 +32,7 @@
               "title": "Host",
               "type": "string",
               "required": true,
-              "description": "IP address or hostname of the SLWF-01pro device"
+              "description": "IP address or hostname of the SLWF-01pro device. Changing it later makes HomeKit see a new accessory."
             },
             "port": {
               "title": "Port",
@@ -49,6 +49,41 @@
               "title": "Encryption Key",
               "type": "string",
               "description": "ESPHome API encryption key (base64, if configured)"
+            },
+            "swing": {
+              "title": "Swing",
+              "type": "string",
+              "default": "vertical",
+              "oneOf": [
+                { "title": "Vertical (up/down)", "enum": ["vertical"] },
+                { "title": "Horizontal (left/right)", "enum": ["horizontal"] },
+                { "title": "Both", "enum": ["both"] }
+              ],
+              "description": "Which louvers move when swing is turned on in HomeKit"
+            },
+            "dryModeSwitch": {
+              "title": "Dry mode switch",
+              "type": "boolean",
+              "default": true,
+              "description": "Show a switch for Dry mode"
+            },
+            "fanOnlySwitch": {
+              "title": "Fan-only mode switch",
+              "type": "boolean",
+              "default": true,
+              "description": "Show a switch for Fan-only mode"
+            },
+            "presetSwitches": {
+              "title": "Boost and Sleep switches",
+              "type": "boolean",
+              "default": false,
+              "description": "Show switches for the Boost and Sleep presets"
+            },
+            "outdoorTemperature": {
+              "title": "Outdoor temperature sensor",
+              "type": "boolean",
+              "default": true,
+              "description": "Show the outdoor unit's temperature reading as a sensor"
             }
           }
         }

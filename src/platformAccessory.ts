@@ -1,371 +1,500 @@
-import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
-import type {
-  ClimateEntity,
-  ClimateStateResponse,
-  ClimateCommandData,
-} from '@2colors/esphome-native-api';
-import { ClimateMode, ClimateFanMode, ClimateSwingMode, ClimateAction } from './esphome.js';
+import type { Characteristic, CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
+import type { AcDevice, EntityValue } from './device.js';
+import { applyCommand, describeCommand, describeState } from './climate.js';
+import {
+  ClimateFanMode,
+  ClimateMode,
+  ClimatePreset,
+  ClimateSwingMode,
+  type ClimateConfig,
+  type ClimateState,
+  type DeviceInfo,
+} from './esphome.js';
+import {
+  SWITCH_MODES,
+  SWITCH_PRESETS,
+  homeKitValues,
+  isHeatCoolMode,
+  manualFanModes,
+  resolveCommand,
+  targetStateToMode,
+  targetStates,
+  type HeatCoolMode,
+  type HomeKitValues,
+  type Intents,
+} from './homekit.js';
+import { PendingCommands } from './pending.js';
 import type { SmartlightPlatform } from './platform.js';
+import type { SmartlightDeviceConfig } from './settings.js';
 
-// Debounce delay to batch rapid characteristic changes into a single command
-const COMMAND_DEBOUNCE_MS = 600;
+// Collect HomeKit writes that arrive together (e.g. from a scene) into one command.
+const COMMAND_DEBOUNCE_MS = 300;
+// How long HomeKit shows a requested value before deferring to what the AC reports.
+const CONFIRM_TIMEOUT_MS = 8000;
+
+// Used until the device has reported its traits (e.g. it was offline at startup).
+const DEFAULT_TRAITS: ClimateConfig = {
+  objectId: '',
+  key: 0,
+  name: '',
+  supportsCurrentTemperature: true,
+  supportsTwoPointTargetTemperature: false,
+  supportsAction: false,
+  supportedModesList: [ClimateMode.Off, ClimateMode.Cool, ClimateMode.Heat],
+  visualMinTemperature: 17,
+  visualMaxTemperature: 30,
+  visualTargetTemperatureStep: 0.5,
+  supportedFanModesList: [ClimateFanMode.Auto, ClimateFanMode.Low, ClimateFanMode.Medium, ClimateFanMode.High],
+  supportedCustomFanModesList: [],
+  supportedSwingModesList: [],
+  supportedPresetsList: [],
+  supportedCustomPresetsList: [],
+};
+
+const SWING_SETTINGS = {
+  vertical: ClimateSwingMode.Vertical,
+  horizontal: ClimateSwingMode.Horizontal,
+  both: ClimateSwingMode.Both,
+} as const;
+
+const MODE_SWITCHES: Record<number, { subtype: string; label: string }> = {
+  [ClimateMode.Dry]: { subtype: 'dry', label: 'Dry' },
+  [ClimateMode.FanOnly]: { subtype: 'fan-only', label: 'Fan Only' },
+};
+
+const PRESET_SWITCHES: Record<number, { subtype: string; label: string }> = {
+  [ClimatePreset.Boost]: { subtype: 'boost', label: 'Boost' },
+  [ClimatePreset.Sleep]: { subtype: 'sleep', label: 'Sleep' },
+};
+
+const OUTDOOR_SENSOR_SUBTYPE = 'outdoor';
 
 export class SmartlightAccessory {
-  private readonly heaterCoolerService: Service;
-  private readonly entity: ClimateEntity;
-  private readonly minTemp: number;
-  private readonly maxTemp: number;
+  private readonly heaterCooler: Service;
+  private readonly modeSwitches = new Map<number, Service>();
+  private readonly presetSwitches = new Map<number, Service>();
+  private outdoorSensor: Service | undefined;
+  private outdoorSensorId: string | undefined;
 
-  private lastState: ClimateStateResponse | null = null;
-  private pendingCommand: Partial<ClimateCommandData> | null = null;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  // Track the HomeKit-side target mode separately from the device mode.
-  // The device always reports mode=1 (HeatCool) regardless of cool/heat/auto,
-  // so we can't derive the HomeKit mode from device state.
-  private homeKitTargetMode: number;
+  private traits: ClimateConfig;
+  /** Whether `traits` came from the device (now or cached), rather than defaults. */
+  private traitsKnown: boolean;
+  private lastHeatCoolMode: HeatCoolMode;
+  private lastOnMode: number;
+  private readonly pending = new PendingCommands(CONFIRM_TIMEOUT_MS);
+  private intents: Intents = {};
+  private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly platform: SmartlightPlatform,
     private readonly accessory: PlatformAccessory,
-    entity: ClimateEntity,
+    private readonly device: AcDevice,
+    private readonly config: SmartlightDeviceConfig,
   ) {
-    this.entity = entity;
-    this.homeKitTargetMode = this.accessory.context.lastTargetMode
-      ?? this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
+    const { Characteristic, Service } = platform;
+    const context = accessory.context;
 
-    // Accessory information
-    const infoService = this.accessory.getService(this.platform.Service.AccessoryInformation)!;
-    infoService
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Smartlight')
-      .setCharacteristic(this.platform.Characteristic.Model, 'SLWF-01pro')
-      .setCharacteristic(
-        this.platform.Characteristic.SerialNumber,
-        entity.config.uniqueId || 'Unknown',
-      );
+    this.traits = context.traits ?? DEFAULT_TRAITS;
+    this.traitsKnown = context.traits !== undefined;
+    // `lastTargetMode` (a TargetHeaterCoolerState) is from versions ≤ 0.1.14.
+    this.lastHeatCoolMode = context.lastHeatCoolMode
+      ?? (context.lastTargetMode !== undefined ? targetStateToMode(context.lastTargetMode) : ClimateMode.Cool);
+    this.lastOnMode = context.lastOnMode ?? this.lastHeatCoolMode;
+    context.lastHeatCoolMode = this.lastHeatCoolMode;
+    delete context.lastTargetMode;
 
-    // HeaterCooler service
-    this.heaterCoolerService =
-      this.accessory.getService(this.platform.Service.HeaterCooler) ||
-      this.accessory.addService(this.platform.Service.HeaterCooler, this.accessory.displayName);
+    accessory.getService(Service.AccessoryInformation)!
+      .setCharacteristic(Characteristic.Manufacturer, 'Smartlight')
+      .setCharacteristic(Characteristic.Model, 'SLWF-01pro')
+      .setCharacteristic(Characteristic.SerialNumber, context.serialNumber ?? config.host);
 
-    // Active (on/off)
-    this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.Active)
-      .onGet(this.getActive.bind(this))
-      .onSet(this.setActive.bind(this));
+    this.heaterCooler = accessory.getService(Service.HeaterCooler)
+      ?? accessory.addService(Service.HeaterCooler, accessory.displayName);
+    this.heaterCooler.setPrimaryService(true);
 
-    // Current state (heating/cooling/idle)
-    this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState)
-      .onGet(this.getCurrentState.bind(this));
+    const hc = this.heaterCooler;
+    hc.getCharacteristic(Characteristic.Active)
+      .onGet(() => this.read((v) => v.active))
+      .onSet((value) => this.write('Active', value, { active: value as number }));
+    hc.getCharacteristic(Characteristic.CurrentHeaterCoolerState)
+      .onGet(() => this.read((v) => v.currentState));
+    hc.getCharacteristic(Characteristic.TargetHeaterCoolerState)
+      .onGet(() => this.read((v) => v.targetState))
+      .onSet((value) => {
+        // Remember the choice even if it arrives with Active=0, so turning on later uses it.
+        this.setLastHeatCoolMode(targetStateToMode(value as number));
+        this.write('TargetHeaterCoolerState', value, { targetState: value as number });
+      });
+    hc.getCharacteristic(Characteristic.CurrentTemperature)
+      .onGet(() => this.read((v) => v.currentTemperature));
+    hc.getCharacteristic(Characteristic.CoolingThresholdTemperature)
+      .onGet(() => this.read((v) => v.threshold))
+      .onSet((value) => this.write('CoolingThresholdTemperature', value, { coolingThreshold: value as number }));
+    hc.getCharacteristic(Characteristic.HeatingThresholdTemperature)
+      .onGet(() => this.read((v) => v.threshold))
+      .onSet((value) => this.write('HeatingThresholdTemperature', value, { heatingThreshold: value as number }));
 
-    // Target state (auto/heat/cool)
-    this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState)
-      .onGet(this.getTargetState.bind(this))
-      .onSet(this.setTargetState.bind(this));
-
-    // Current temperature
-    this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.CurrentTemperature)
-      .onGet(this.getCurrentTemperature.bind(this));
-
-    // Temperature thresholds
-    this.minTemp = entity.config.visualMinTemperature || 17;
-    this.maxTemp = entity.config.visualMaxTemperature || 30;
-    const tempStep = entity.config.visualTemperatureStep || 0.5;
-
-    const coolingChar = this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature);
-    coolingChar.updateValue(this.minTemp);
-    coolingChar.setProps({ minValue: this.minTemp, maxValue: this.maxTemp, minStep: tempStep });
-    coolingChar.onGet(this.getCoolingThreshold.bind(this));
-    coolingChar.onSet(this.setTargetTemperature.bind(this));
-
-    const heatingChar = this.heaterCoolerService
-      .getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature);
-    heatingChar.updateValue(this.minTemp);
-    heatingChar.setProps({ minValue: this.minTemp, maxValue: this.maxTemp, minStep: tempStep });
-    heatingChar.onGet(this.getHeatingThreshold.bind(this));
-    heatingChar.onSet(this.setTargetTemperature.bind(this));
-
-    // Swing mode
-    if (entity.config.supportedSwingModesList?.length > 0) {
-      this.heaterCoolerService
-        .getCharacteristic(this.platform.Characteristic.SwingMode)
-        .onGet(this.getSwingMode.bind(this))
-        .onSet(this.setSwingMode.bind(this));
+    // A cached TemperatureSensor means the device had an outdoor sensor last time.
+    this.outdoorSensor = accessory.getServiceById(Service.TemperatureSensor, OUTDOOR_SENSOR_SUBTYPE);
+    if (this.outdoorSensor && config.outdoorTemperature === false) {
+      accessory.removeService(this.outdoorSensor);
+      this.outdoorSensor = undefined;
     }
+    this.outdoorSensor?.getCharacteristic(Characteristic.CurrentTemperature)
+      .onGet(() => this.readOutdoorTemperature());
 
-    // Rotation speed (mapped from fan modes)
-    if (entity.config.supportedFanModesList?.length > 0) {
-      this.heaterCoolerService
-        .getCharacteristic(this.platform.Characteristic.RotationSpeed)
-        .setProps({ minValue: 0, maxValue: 100, minStep: 25 })
-        .onGet(this.getRotationSpeed.bind(this))
-        .onSet(this.setRotationSpeed.bind(this));
-    }
+    this.applyTraits(this.traits);
 
-    if (this.platform.debugMode) {
-      this.platform.log.info(
-        `[${this.accessory.displayName}] Supported modes: ${JSON.stringify(entity.config.supportedModesList)}`,
-      );
-    }
-
-    // Listen for state updates from the device
-    this.entity.on('state', (state: ClimateStateResponse) => {
-      if (this.platform.debugMode) {
-        this.platform.log.info(
-          `[${this.accessory.displayName}] State: mode=${state.mode} action=${state.action} ` +
-          `current=${state.currentTemperature}°C target=${state.targetTemperature}°C ` +
-          `fan=${state.fanMode} swing=${state.swingMode}`,
-        );
-      }
-      this.lastState = state;
-      this.pushStateToHomeKit(state);
+    device.on('climateConfig', (traits: ClimateConfig) => {
+      this.traitsKnown = true;
+      this.applyTraits(traits);
+      context.traits = traits;
+      this.saveContext();
     });
+    device.on('climateState', (state: ClimateState) => this.onState(state));
+    device.on('availability', (available: boolean) => this.onAvailability(available));
+    device.on('entityState', (objectId: string, value: EntityValue) => this.onEntityState(objectId, value));
+    device.on('deviceInfo', (info: DeviceInfo) => this.onDeviceInfo(info));
   }
 
-  // --- Getters ---
+  // --- Reading ---
 
-  private getActive(): CharacteristicValue {
-    if (!this.lastState) {
-      return this.platform.Characteristic.Active.INACTIVE;
+  /** The values HomeKit should show: device state, plus commands in flight and writes not yet sent. */
+  private currentValues(): HomeKitValues | null {
+    const state = this.device.climateState;
+    if (!state || !this.device.available) {
+      return null;
     }
-    return this.lastState.mode === ClimateMode.Off
-      ? this.platform.Characteristic.Active.INACTIVE
-      : this.platform.Characteristic.Active.ACTIVE;
+    const withPending = this.pending.apply(state);
+    const withIntents = applyCommand(withPending, resolveCommand(this.intents, this.resolveContext(withPending)));
+    return homeKitValues(withIntents, this.traits, this.lastHeatCoolMode);
   }
 
-  private getCurrentState(): CharacteristicValue {
-    if (!this.lastState) {
-      return this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+  private read<T extends CharacteristicValue>(pick: (values: HomeKitValues) => T): T {
+    const values = this.currentValues();
+    if (!values) {
+      throw this.noResponse();
     }
-    switch (this.lastState.action) {
-      case ClimateAction.Cooling:
-      case ClimateAction.Drying:
-        return this.platform.Characteristic.CurrentHeaterCoolerState.COOLING;
-      case ClimateAction.Heating:
-        return this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
-      case ClimateAction.Idle:
-      case ClimateAction.Fan:
-        return this.platform.Characteristic.CurrentHeaterCoolerState.IDLE;
-      default:
-        return this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
-    }
+    return pick(values);
   }
 
-  private getTargetState(): CharacteristicValue {
-    return this.homeKitTargetMode;
+  private readOutdoorTemperature(): number {
+    const value = this.outdoorSensorId ? this.device.entityStates.get(this.outdoorSensorId) : undefined;
+    if (!this.device.available || typeof value !== 'number' || !Number.isFinite(value)) {
+      throw this.noResponse();
+    }
+    return value;
   }
 
-  private getCurrentTemperature(): CharacteristicValue {
-    return this.lastState?.currentTemperature ?? 20;
+  private noResponse(): Error {
+    const { HapStatusError, HAPStatus } = this.platform.api.hap;
+    return new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
   }
 
-  private getCoolingThreshold(): CharacteristicValue {
-    if (!this.lastState) {
-      return this.minTemp;
+  // --- Writing ---
+
+  private write(characteristic: string, value: CharacteristicValue, intent: Intents): void {
+    this.debug(`HomeKit set ${characteristic}=${value}`);
+    if (!this.device.available) {
+      throw this.noResponse();
     }
-    if (this.homeKitTargetMode === this.platform.Characteristic.TargetHeaterCoolerState.HEAT) {
-      return this.maxTemp;
-    }
-    return this.clampTemp(this.lastState.targetTemperature);
+    this.intents = mergeIntents(this.intents, intent);
+    clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => this.flush(), COMMAND_DEBOUNCE_MS);
   }
 
-  private getHeatingThreshold(): CharacteristicValue {
-    if (!this.lastState) {
-      return this.minTemp;
-    }
-    if (this.homeKitTargetMode === this.platform.Characteristic.TargetHeaterCoolerState.COOL) {
-      return this.minTemp;
-    }
-    return this.clampTemp(this.lastState.targetTemperature);
-  }
+  private flush(): void {
+    this.debounceTimer = undefined;
+    const intents = this.intents;
+    this.intents = {};
 
-  private getSwingMode(): CharacteristicValue {
-    if (!this.lastState || this.lastState.swingMode === ClimateSwingMode.Off) {
-      return this.platform.Characteristic.SwingMode.SWING_DISABLED;
+    const state = this.device.climateState;
+    if (!state || !this.device.available) {
+      this.platform.log.warn(`[${this.accessory.displayName}] Device unavailable; HomeKit change not sent`);
+      return;
     }
-    return this.platform.Characteristic.SwingMode.SWING_ENABLED;
-  }
-
-  private getRotationSpeed(): CharacteristicValue {
-    if (!this.lastState) {
-      return 0;
-    }
-    return this.fanModeToSpeed(this.lastState.fanMode);
-  }
-
-  // --- Setters ---
-
-  private setActive(value: CharacteristicValue): void {
-    if (value === this.platform.Characteristic.Active.INACTIVE) {
-      this.sendCommand({ mode: ClimateMode.Off });
+    const base = this.pending.apply(state);
+    const command = resolveCommand(intents, this.resolveContext(base));
+    if (Object.keys(command).length === 0) {
+      this.debug('Nothing to change');
     } else {
-      // Use homeKitTargetMode — it tracks the user's last explicit mode
-      // selection and survives across restarts, unlike the characteristic
-      // cache which can be stale after restart or during rapid callbacks.
-      this.sendCommand({ mode: this.targetStateToClimateMode(this.homeKitTargetMode) });
-    }
-  }
-
-  private setTargetState(value: CharacteristicValue): void {
-    this.homeKitTargetMode = value as number;
-    this.accessory.context.lastTargetMode = this.homeKitTargetMode;
-    this.sendCommand({ mode: this.targetStateToClimateMode(value as number) });
-  }
-
-  private setTargetTemperature(value: CharacteristicValue): void {
-    this.sendCommand({ targetTemperature: value as number });
-  }
-
-  private setSwingMode(value: CharacteristicValue): void {
-    if (value === this.platform.Characteristic.SwingMode.SWING_ENABLED) {
-      this.sendCommand({ swingMode: ClimateSwingMode.Vertical });
-    } else {
-      this.sendCommand({ swingMode: ClimateSwingMode.Off });
-    }
-  }
-
-  private setRotationSpeed(value: CharacteristicValue): void {
-    this.sendCommand({ fanMode: this.speedToFanMode(value as number) });
-  }
-
-  // --- Command batching ---
-
-  private sendCommand(params: Omit<ClimateCommandData, 'key'>): void {
-    this.pendingCommand = {
-      ...this.pendingCommand,
-      ...params,
-    };
-
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
-
-    this.debounceTimer = setTimeout(() => {
-      if (this.pendingCommand) {
-        if (this.platform.debugMode) {
-          this.platform.log.info('Sending command:', JSON.stringify(this.pendingCommand));
-        }
-        this.entity.command(this.pendingCommand);
-        this.pendingCommand = null;
+      this.debug(`Sending ${describeCommand(command)}`);
+      if (this.device.sendClimateCommand(command)) {
+        this.pending.add(command, Date.now());
+        this.scheduleDeadline();
       }
-    }, COMMAND_DEBOUNCE_MS);
+    }
+    this.pushValues();
   }
 
-  // --- Push state updates to HomeKit ---
+  private resolveContext(state: ClimateState) {
+    const preferred = SWING_SETTINGS[this.config.swing ?? 'vertical'];
+    const supportedSwing = this.traits.supportedSwingModesList.filter((m) => m !== ClimateSwingMode.Off);
+    return {
+      state,
+      traits: this.traits,
+      lastHeatCoolMode: this.lastHeatCoolMode,
+      lastOnMode: this.lastOnMode,
+      swingMode: supportedSwing.includes(preferred) ? preferred : (supportedSwing[0] ?? preferred),
+    };
+  }
 
-  private pushStateToHomeKit(state: ClimateStateResponse): void {
+  // --- Device events ---
+
+  private onState(state: ClimateState): void {
+    this.debug(`Device state: ${describeState(state)}`);
+    this.reportExpired(this.pending.settle(state, Date.now()));
+    this.scheduleDeadline();
+
+    const effective = this.pending.apply(state);
+    if (isHeatCoolMode(effective.mode)) {
+      this.setLastHeatCoolMode(effective.mode);
+    }
+    if (effective.mode !== ClimateMode.Off && effective.mode !== this.lastOnMode) {
+      this.lastOnMode = effective.mode;
+      this.accessory.context.lastOnMode = effective.mode;
+      this.saveContext();
+    }
+    this.pushValues();
+  }
+
+  private onAvailability(available: boolean): void {
+    if (available) {
+      this.pushValues();
+      return;
+    }
+    // Anything in flight is moot; show "No Response" until the device is back.
+    this.pending.clear();
+    clearTimeout(this.deadlineTimer);
+    this.heaterCooler.updateCharacteristic(this.platform.Characteristic.Active, this.noResponse());
+  }
+
+  private onEntityState(objectId: string, value: EntityValue): void {
+    const entity = this.device.entities.get(objectId);
+    const isOutdoorTemperature = entity?.type === 'Sensor' && entity.config.deviceClass === 'temperature' &&
+      /outdoor/i.test(objectId);
+    if (!isOutdoorTemperature || this.config.outdoorTemperature === false) {
+      return;
+    }
+    this.outdoorSensorId = objectId;
+    if (!this.outdoorSensor) {
+      const { Service, Characteristic } = this.platform;
+      const name = `${this.accessory.displayName} Outdoor`;
+      this.outdoorSensor = this.accessory.addService(Service.TemperatureSensor, name, OUTDOOR_SENSOR_SUBTYPE);
+      this.outdoorSensor.addOptionalCharacteristic(Characteristic.ConfiguredName);
+      this.outdoorSensor.setCharacteristic(Characteristic.ConfiguredName, name);
+      this.outdoorSensor.getCharacteristic(Characteristic.CurrentTemperature)
+        .setProps({ minValue: -50, maxValue: 70 })
+        .onGet(() => this.readOutdoorTemperature());
+      this.heaterCooler.addLinkedService(this.outdoorSensor);
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      this.outdoorSensor.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, value);
+    }
+  }
+
+  private onDeviceInfo(info: DeviceInfo): void {
+    const { Characteristic, Service } = this.platform;
+    const serialNumber = info.macAddress || this.config.host;
+    this.accessory.getService(Service.AccessoryInformation)!
+      .updateCharacteristic(Characteristic.SerialNumber, serialNumber)
+      .updateCharacteristic(Characteristic.FirmwareRevision, info.esphomeVersion);
+    if (this.accessory.context.serialNumber !== serialNumber) {
+      this.accessory.context.serialNumber = serialNumber;
+      this.saveContext();
+    }
+  }
+
+  // --- Pushing to HomeKit ---
+
+  private pushValues(): void {
+    const values = this.currentValues();
+    if (!values) {
+      return;
+    }
     const { Characteristic } = this.platform;
+    const hc = this.heaterCooler;
+    hc.updateCharacteristic(Characteristic.Active, values.active);
+    hc.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, values.currentState);
+    hc.updateCharacteristic(Characteristic.TargetHeaterCoolerState, values.targetState);
+    if (Number.isFinite(values.currentTemperature)) {
+      hc.updateCharacteristic(Characteristic.CurrentTemperature, values.currentTemperature);
+    }
+    hc.updateCharacteristic(Characteristic.CoolingThresholdTemperature, values.threshold);
+    hc.updateCharacteristic(Characteristic.HeatingThresholdTemperature, values.threshold);
+    if (hc.testCharacteristic(Characteristic.RotationSpeed)) {
+      hc.updateCharacteristic(Characteristic.RotationSpeed, values.rotationSpeed);
+    }
+    if (hc.testCharacteristic(Characteristic.SwingMode)) {
+      hc.updateCharacteristic(Characteristic.SwingMode, values.swing);
+    }
+    for (const [mode, service] of this.modeSwitches) {
+      service.updateCharacteristic(Characteristic.On, values.modeSwitches.get(mode) ?? false);
+    }
+    for (const [preset, service] of this.presetSwitches) {
+      service.updateCharacteristic(Characteristic.On, values.presetSwitches.get(preset) ?? false);
+    }
+  }
 
-    const isActive = state.mode !== ClimateMode.Off;
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.Active,
-      isActive ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE,
-    );
+  // --- Traits ---
 
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.CurrentHeaterCoolerState,
-      this.getCurrentState(),
-    );
+  /** Set characteristic ranges and add/remove optional parts to match what the device supports. */
+  private applyTraits(traits: ClimateConfig): void {
+    this.traits = traits;
+    const { Characteristic, Service } = this.platform;
+    const hc = this.heaterCooler;
+    // Until the device has reported its traits, keep what's already there: removing and
+    // re-adding a characteristic or service would give it a new ID in HomeKit.
+    const keep = (supported: boolean, exists: boolean) => supported || (!this.traitsKnown && exists);
 
-    // Push our tracked target mode to keep HomeKit in sync.
-    // (The device always reports mode=1/HeatCool regardless of the actual mode,
-    // so we push the HomeKit-side mode we're tracking instead of the device mode.)
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.TargetHeaterCoolerState,
-      this.homeKitTargetMode,
-    );
+    hc.getCharacteristic(Characteristic.TargetHeaterCoolerState).setProps({ validValues: targetStates(traits) });
+    const range = {
+      minValue: traits.visualMinTemperature,
+      maxValue: traits.visualMaxTemperature,
+      minStep: traits.visualTargetTemperatureStep || 0.5,
+    };
+    hc.getCharacteristic(Characteristic.CoolingThresholdTemperature).setProps(range);
+    hc.getCharacteristic(Characteristic.HeatingThresholdTemperature).setProps(range);
 
-    this.heaterCoolerService.updateCharacteristic(
-      Characteristic.CurrentTemperature,
-      state.currentTemperature,
-    );
+    const fanModes = manualFanModes(traits);
+    const hasFanModes = keep(fanModes.length > 0, hc.testCharacteristic(Characteristic.RotationSpeed));
+    this.toggleCharacteristic(Characteristic.RotationSpeed, hasFanModes, (c) => c
+      .setProps({ minValue: 0, maxValue: 100, minStep: 100 / Math.max(1, fanModes.length) })
+      .onGet(() => this.read((v) => v.rotationSpeed))
+      .onSet((value) => this.write('RotationSpeed', value, { rotationSpeed: value as number })));
 
-    // Set thresholds based on HomeKit-side mode to prevent collapsing to AUTO.
-    // The device has a single target temperature, but HomeKit expects two thresholds.
-    const target = this.clampTemp(state.targetTemperature);
-    const { TargetHeaterCoolerState } = Characteristic;
-    if (this.homeKitTargetMode === TargetHeaterCoolerState.COOL) {
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.CoolingThresholdTemperature, target);
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.HeatingThresholdTemperature, this.minTemp);
-    } else if (this.homeKitTargetMode === TargetHeaterCoolerState.HEAT) {
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.HeatingThresholdTemperature, target);
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.CoolingThresholdTemperature, this.maxTemp);
-    } else {
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.CoolingThresholdTemperature, target);
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.HeatingThresholdTemperature, target);
+    const hasSwing = keep(traits.supportedSwingModesList.some((m) => m !== ClimateSwingMode.Off),
+      hc.testCharacteristic(Characteristic.SwingMode));
+    this.toggleCharacteristic(Characteristic.SwingMode, hasSwing, (c) => c
+      .onGet(() => this.read((v) => v.swing))
+      .onSet((value) => this.write('SwingMode', value, { swing: value as number })));
+
+    for (const mode of SWITCH_MODES) {
+      const enabled = (mode === ClimateMode.Dry ? this.config.dryModeSwitch : this.config.fanOnlySwitch) !== false;
+      const exists = this.accessory.getServiceById(Service.Switch, MODE_SWITCHES[mode].subtype) !== undefined;
+      const wanted = enabled && keep(traits.supportedModesList.includes(mode), exists);
+      this.toggleSwitch(this.modeSwitches, mode, MODE_SWITCHES[mode], wanted,
+        (v) => v.modeSwitches.get(mode) ?? false,
+        (on) => ({ modeSwitches: new Map([[mode, on]]) }));
+    }
+    for (const preset of SWITCH_PRESETS) {
+      const exists = this.accessory.getServiceById(Service.Switch, PRESET_SWITCHES[preset].subtype) !== undefined;
+      const wanted = this.config.presetSwitches === true && keep(traits.supportedPresetsList.includes(preset), exists);
+      this.toggleSwitch(this.presetSwitches, preset, PRESET_SWITCHES[preset], wanted,
+        (v) => v.presetSwitches.get(preset) ?? false,
+        (on) => ({ presetSwitches: new Map([[preset, on]]) }));
     }
 
-    if (this.entity.config.supportedSwingModesList?.length > 0) {
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.SwingMode,
-        state.swingMode === ClimateSwingMode.Off
-          ? Characteristic.SwingMode.SWING_DISABLED
-          : Characteristic.SwingMode.SWING_ENABLED,
+    this.pushValues();
+  }
+
+  private toggleCharacteristic(
+    type: typeof Characteristic.RotationSpeed | typeof Characteristic.SwingMode,
+    wanted: boolean,
+    configure: (c: Characteristic) => void,
+  ): void {
+    const hc = this.heaterCooler;
+    if (wanted) {
+      configure(hc.getCharacteristic(type));
+    } else if (hc.testCharacteristic(type)) {
+      hc.removeCharacteristic(hc.getCharacteristic(type));
+    }
+  }
+
+  private toggleSwitch(
+    services: Map<number, Service>,
+    key: number,
+    { subtype, label }: { subtype: string; label: string },
+    wanted: boolean,
+    read: (values: HomeKitValues) => boolean,
+    intent: (on: boolean) => Intents,
+  ): void {
+    const { Service, Characteristic } = this.platform;
+    let service = this.accessory.getServiceById(Service.Switch, subtype);
+    if (!wanted) {
+      if (service) {
+        this.accessory.removeService(service);
+      }
+      services.delete(key);
+      return;
+    }
+    if (!service) {
+      const name = `${this.accessory.displayName} ${label}`;
+      service = this.accessory.addService(Service.Switch, name, subtype);
+      service.addOptionalCharacteristic(Characteristic.ConfiguredName);
+      service.setCharacteristic(Characteristic.ConfiguredName, name);
+      this.heaterCooler.addLinkedService(service);
+    }
+    service.getCharacteristic(Characteristic.On)
+      .onGet(() => this.read(read))
+      .onSet((value) => this.write(`${label} switch`, value, intent(value as boolean)));
+    services.set(key, service);
+  }
+
+  // --- Helpers ---
+
+  private scheduleDeadline(): void {
+    clearTimeout(this.deadlineTimer);
+    const next = this.pending.nextDeadline();
+    if (next === undefined) {
+      return;
+    }
+    // The AC only reports changes, so a rejected command produces no state update; check on a timer.
+    this.deadlineTimer = setTimeout(() => {
+      const state = this.device.climateState;
+      if (state) {
+        this.reportExpired(this.pending.settle(state, Date.now()));
+      }
+      this.scheduleDeadline();
+      this.pushValues();
+    }, Math.max(0, next - Date.now()) + 10);
+  }
+
+  private reportExpired(expired: ReturnType<PendingCommands['settle']>): void {
+    const state = this.device.climateState;
+    for (const { field, requested } of expired) {
+      this.platform.log.info(
+        `[${this.accessory.displayName}] The AC did not apply ${describeCommand({ [field]: requested })}` +
+        (state ? ` (it reports ${describeState(state)})` : ''),
       );
     }
+  }
 
-    if (this.entity.config.supportedFanModesList?.length > 0) {
-      this.heaterCoolerService.updateCharacteristic(
-        Characteristic.RotationSpeed,
-        this.fanModeToSpeed(state.fanMode),
-      );
+  private setLastHeatCoolMode(mode: HeatCoolMode): void {
+    if (mode !== this.lastHeatCoolMode) {
+      this.lastHeatCoolMode = mode;
+      this.accessory.context.lastHeatCoolMode = mode;
+      this.saveContext();
     }
   }
 
-  // --- Mapping helpers ---
-
-  private targetStateToClimateMode(targetState: number): number {
-    const { Characteristic } = this.platform;
-    switch (targetState) {
-      case Characteristic.TargetHeaterCoolerState.COOL:
-        return ClimateMode.Cool;
-      case Characteristic.TargetHeaterCoolerState.HEAT:
-        return ClimateMode.Heat;
-      default:
-        return ClimateMode.HeatCool;
-    }
+  private saveContext(): void {
+    this.platform.api.updatePlatformAccessories([this.accessory]);
   }
 
-  private fanModeToSpeed(fanMode: number): number {
-    switch (fanMode) {
-      case ClimateFanMode.Low:
-      case ClimateFanMode.Quiet:
-        return 25;
-      case ClimateFanMode.Medium:
-      case ClimateFanMode.Middle:
-        return 50;
-      case ClimateFanMode.High:
-      case ClimateFanMode.Focus:
-        return 75;
-      default:
-        // Auto, On, Off, Diffuse
-        return 0;
-    }
-  }
-
-  private speedToFanMode(speed: number): number {
-    if (speed <= 0) {
-      return ClimateFanMode.Auto;
-    } else if (speed <= 30) {
-      return ClimateFanMode.Low;
-    } else if (speed <= 60) {
-      return ClimateFanMode.Medium;
+  private debug(message: string): void {
+    const text = `[${this.accessory.displayName}] ${message}`;
+    if (this.platform.debugMode) {
+      this.platform.log.info(text);
     } else {
-      return ClimateFanMode.High;
+      this.platform.log.debug(text);
     }
   }
+}
 
-  private clampTemp(temp: number): number {
-    return Math.max(this.minTemp, Math.min(this.maxTemp, temp));
+function mergeIntents(current: Intents, update: Intents): Intents {
+  return {
+    ...current,
+    ...update,
+    modeSwitches: mergeMaps(current.modeSwitches, update.modeSwitches),
+    presetSwitches: mergeMaps(current.presetSwitches, update.presetSwitches),
+  };
+}
+
+function mergeMaps<K, V>(a?: Map<K, V>, b?: Map<K, V>): Map<K, V> | undefined {
+  if (!a || !b) {
+    return a ?? b;
   }
+  return new Map([...a, ...b]);
 }

@@ -7,9 +7,7 @@ import type {
   Service,
   Characteristic,
 } from 'homebridge';
-import pkg from '@2colors/esphome-native-api';
-const { Client } = pkg;
-import type { Entity, ClimateEntity } from '@2colors/esphome-native-api';
+import { AcDevice } from './device.js';
 import { PLATFORM_NAME, PLUGIN_NAME, type SmartlightDeviceConfig } from './settings.js';
 import { SmartlightAccessory } from './platformAccessory.js';
 
@@ -19,7 +17,8 @@ export class SmartlightPlatform implements DynamicPlatformPlugin {
   public readonly debugMode: boolean;
 
   private readonly cachedAccessories = new Map<string, PlatformAccessory>();
-  private readonly registeredUUIDs = new Set<string>();
+  private readonly duplicateAccessories: PlatformAccessory[] = [];
+  private readonly devices: AcDevice[] = [];
 
   constructor(
     public readonly log: Logging,
@@ -30,93 +29,109 @@ export class SmartlightPlatform implements DynamicPlatformPlugin {
     this.Characteristic = api.hap.Characteristic;
     this.debugMode = config.debug === true;
 
-    const devices = (config.devices ?? []) as SmartlightDeviceConfig[];
-    if (devices.length === 0) {
-      this.log.warn('No devices configured');
-      return;
-    }
-
-    this.api.on('didFinishLaunching', () => {
-      for (const device of devices) {
-        this.connectDevice(device);
+    this.api.on('didFinishLaunching', () => this.setUpDevices());
+    this.api.on('shutdown', () => {
+      for (const device of this.devices) {
+        device.disconnect();
       }
     });
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.log.info('Restoring cached accessory:', accessory.displayName);
+    if (this.cachedAccessories.has(accessory.UUID)) {
+      // Versions ≤ 0.1.14 on Homebridge 2 betas could save an accessory twice (see
+      // `register`). Both copies get published, so HomeKit saw a stale twin of the AC.
+      this.duplicateAccessories.push(accessory);
+      return;
+    }
+    this.log.debug('Restoring cached accessory:', accessory.displayName);
     this.cachedAccessories.set(accessory.UUID, accessory);
   }
 
-  private connectDevice(deviceConfig: SmartlightDeviceConfig): void {
-    const port = deviceConfig.port ?? 6053;
-    this.log.info(`Connecting to ${deviceConfig.name} at ${deviceConfig.host}:${port}`);
+  private setUpDevices(): void {
+    if (this.duplicateAccessories.length > 0) {
+      this.log.info(`Removing ${this.duplicateAccessories.length} duplicate cached accessory(ies)`);
+      this.unregister(this.duplicateAccessories);
+    }
 
-    const client = new Client({
-      host: deviceConfig.host,
-      port,
-      password: deviceConfig.password,
-      encryptionKey: deviceConfig.encryptionKey,
-      reconnect: true,
-      reconnectInterval: 15000,
-      clientInfo: `${PLUGIN_NAME} ${deviceConfig.name}`,
-    });
+    const devices = (this.config.devices ?? []) as SmartlightDeviceConfig[];
+    if (devices.length === 0) {
+      this.log.warn('No devices configured');
+    }
 
-    client.on('newEntity', (entity: Entity) => {
-      this.log.debug(`[${deviceConfig.name}] Discovered entity: type=${entity.type} name=${entity.name} key=${entity.id}`);
-      if (entity.type === 'Climate') {
-        this.registerClimateAccessory(deviceConfig, entity as ClimateEntity);
+    const configured = new Set<string>();
+    for (const deviceConfig of devices) {
+      if (!deviceConfig.host) {
+        this.log.error(`Device "${deviceConfig.name ?? '(unnamed)'}" has no host; skipping`);
+        continue;
       }
-    });
+      // Same UUID scheme as earlier versions, so HomeKit keeps the existing accessory.
+      const uuid = this.api.hap.uuid.generate(`${deviceConfig.host}-climate`);
+      if (configured.has(uuid)) {
+        this.log.warn(`Device ${deviceConfig.host} is configured more than once; skipping the duplicate`);
+        continue;
+      }
+      configured.add(uuid);
+      this.setUpDevice(deviceConfig, uuid);
+    }
 
-    client.on('error', (error: Error) => {
-      this.log.error(`[${deviceConfig.name}] Connection error:`, error.message);
-    });
-
-    client.on('disconnected', () => {
-      this.log.warn(`[${deviceConfig.name}] Disconnected, will reconnect...`);
-    });
-
-    client.on('connected', () => {
-      this.log.info(`[${deviceConfig.name}] Connected`);
-    });
-
-    client.connect();
+    const stale = [...this.cachedAccessories.values()].filter((a) => !configured.has(a.UUID));
+    if (stale.length > 0) {
+      this.log.info(`Removing accessories no longer in the config: ${stale.map((a) => a.displayName).join(', ')}`);
+      this.unregister(stale);
+    }
   }
 
-  private registerClimateAccessory(deviceConfig: SmartlightDeviceConfig, entity: ClimateEntity): void {
-    const uuid = this.api.hap.uuid.generate(
-      entity.config.uniqueId || `${deviceConfig.host}-climate`,
-    );
-
-    // Prevent double-registration on reconnect (Client re-emits newEntity)
-    if (this.registeredUUIDs.has(uuid)) {
-      this.log.debug('Skipping already-registered accessory:', deviceConfig.name);
-      return;
-    }
-    this.registeredUUIDs.add(uuid);
-
-    const existingAccessory = this.cachedAccessories.get(uuid);
-    if (existingAccessory) {
-      this.log.info('Restoring climate accessory from cache:', deviceConfig.name);
-      existingAccessory.context.deviceConfig = deviceConfig;
-      new SmartlightAccessory(this, existingAccessory, entity);
-      return;
-    }
-
-    this.log.info('Adding new climate accessory:', deviceConfig.name);
-    const accessory = new this.api.platformAccessory(deviceConfig.name, uuid);
-    accessory.context.deviceConfig = deviceConfig;
-
-    new SmartlightAccessory(this, accessory, entity);
-
+  // Homebridge 2 betas handle (un)registration twice: once in Server and once in
+  // BridgeService. The second pass throws (the accessory is already (un)bridged),
+  // and a second register also adds a duplicate to the accessory cache, which
+  // updatePlatformAccessories() removes again.
+  private register(accessory: PlatformAccessory): void {
     try {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    } catch (e) {
-      // Workaround for homebridge v2 beta double-registration bug:
-      // both Server and BridgeService listen for 'registerPlatformAccessories',
-      // causing addBridgedAccessory to be called twice for the same accessory.
-      this.log.debug('registerPlatformAccessories threw (likely beta double-listener bug):', (e as Error).message);
+    } catch (error) {
+      this.log.debug('registerPlatformAccessories threw (Homebridge 2 beta double handling):', (error as Error).message);
+    }
+    this.api.updatePlatformAccessories([accessory]);
+  }
+
+  private unregister(accessories: PlatformAccessory[]): void {
+    try {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessories);
+    } catch (error) {
+      this.log.debug('unregisterPlatformAccessories threw (Homebridge 2 beta double handling):', (error as Error).message);
+    }
+  }
+
+  private setUpDevice(deviceConfig: SmartlightDeviceConfig, uuid: string): void {
+    const name = deviceConfig.name || deviceConfig.host;
+    let accessory = this.cachedAccessories.get(uuid);
+    const isNew = !accessory;
+    accessory ??= new this.api.platformAccessory(name, uuid);
+    accessory.context.deviceConfig = deviceConfig;
+
+    const device = new AcDevice({
+      name,
+      host: deviceConfig.host,
+      port: deviceConfig.port,
+      password: deviceConfig.password,
+      encryptionKey: deviceConfig.encryptionKey,
+      clientInfo: `${PLUGIN_NAME} ${name}`,
+      log: this.log,
+    });
+    this.devices.push(device);
+
+    new SmartlightAccessory(this, accessory, device, deviceConfig);
+
+    if (isNew) {
+      this.log.info('Adding new accessory:', name);
+      this.register(accessory);
+    }
+
+    try {
+      device.connect();
+    } catch (error) {
+      this.log.error(`[${name}] Could not connect: ${(error as Error).message}`);
     }
   }
 }

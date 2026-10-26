@@ -1,7 +1,9 @@
 {
-  "watch": ["src"],
+  "watch": [
+    "src"
+  ],
   "ext": "ts",
-  "exec": "tsc && homebridge -U ./test/hbConfig -D",
+  "exec": "tsc && homebridge -U ./test/hbConfig -D -I -P . --strict-plugin-resolution",
   "signal": "SIGTERM",
   "env": {
     "NODE_OPTIONS": "--trace-warnings"

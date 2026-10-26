@@ -4,3 +4,7 @@ eslint.config.js
 nodemon.json
 test/
 .github/
+scripts/
+tsconfig.check.json
+vitest.config.ts
+.claude/

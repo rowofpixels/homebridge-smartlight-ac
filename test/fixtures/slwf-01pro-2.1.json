@@ -1,0 +1,235 @@
+{
+  "recordedAt": "2026-10-26T13:09:43.723Z",
+  "deviceInfo": {
+    "esphomeVersion": "2024.4.2",
+    "model": "esp12e",
+    "projectName": "SMLIGHT.SLWF-01Pro",
+    "projectVersion": "2.1"
+  },
+  "climateConfig": {
+    "objectId": "air_conditioner",
+    "key": 892790892,
+    "name": "Air Conditioner",
+    "supportsCurrentTemperature": true,
+    "supportsTwoPointTargetTemperature": false,
+    "supportedModesList": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "visualMinTemperature": 17,
+    "visualMaxTemperature": 30,
+    "visualTargetTemperatureStep": 0.5,
+    "legacySupportsAway": false,
+    "supportsAction": false,
+    "supportedFanModesList": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "supportedSwingModesList": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "supportedCustomFanModesList": [
+      "silent",
+      "turbo"
+    ],
+    "supportedPresetsList": [
+      0,
+      3,
+      5,
+      6
+    ],
+    "supportedCustomPresetsList": [
+      "freeze protection"
+    ],
+    "disabledByDefault": false,
+    "icon": "",
+    "entityCategory": 0,
+    "visualCurrentTemperatureStep": 0.5,
+    "supportsCurrentHumidity": false,
+    "supportsTargetHumidity": false,
+    "visualMinHumidity": 30,
+    "visualMaxHumidity": 99,
+    "deviceId": 0,
+    "featureFlags": 0
+  },
+  "climateStates": [
+    {
+      "key": 892790892,
+      "mode": 3,
+      "currentTemperature": 22.5,
+      "targetTemperature": 21,
+      "targetTemperatureLow": 0,
+      "targetTemperatureHigh": 0,
+      "unusedLegacyAway": false,
+      "action": 0,
+      "fanMode": 2,
+      "swingMode": 2,
+      "customFanMode": "",
+      "preset": 0,
+      "customPreset": "",
+      "currentHumidity": 0,
+      "targetHumidity": 0,
+      "deviceId": 0
+    }
+  ],
+  "entities": [
+    {
+      "type": "Sensor",
+      "config": {
+        "objectId": "air_conditioner_wi-fi_signal",
+        "key": 772313802,
+        "name": "Air Conditioner Wi-Fi Signal",
+        "icon": "",
+        "unitOfMeasurement": "dBm",
+        "accuracyDecimals": 0,
+        "forceUpdate": false,
+        "deviceClass": "signal_strength",
+        "stateClass": 1,
+        "legacyLastResetType": 0,
+        "disabledByDefault": false,
+        "entityCategory": 2,
+        "deviceId": 0
+      },
+      "state": -75
+    },
+    {
+      "type": "Sensor",
+      "config": {
+        "objectId": "air_conditioner_uptime_days",
+        "key": 357239407,
+        "name": "Air Conditioner Uptime Days",
+        "icon": "mdi:clock-start",
+        "unitOfMeasurement": "days",
+        "accuracyDecimals": 1,
+        "forceUpdate": false,
+        "deviceClass": "",
+        "stateClass": 0,
+        "legacyLastResetType": 0,
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceId": 0
+      },
+      "state": 0.3595670759677887
+    },
+    {
+      "type": "Sensor",
+      "config": {
+        "objectId": "air_conditioner_outdoor_temperature",
+        "key": 3877880146,
+        "name": "Air Conditioner Outdoor Temperature",
+        "icon": "mdi:thermometer",
+        "unitOfMeasurement": "°C",
+        "accuracyDecimals": 0,
+        "forceUpdate": false,
+        "deviceClass": "temperature",
+        "stateClass": 1,
+        "legacyLastResetType": 0,
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceId": 0
+      },
+      "state": 4
+    },
+    {
+      "type": "Sensor",
+      "config": {
+        "objectId": "air_conditioner_power_usage",
+        "key": 554706210,
+        "name": "Air Conditioner Power Usage",
+        "icon": "mdi:power",
+        "unitOfMeasurement": "W",
+        "accuracyDecimals": 0,
+        "forceUpdate": false,
+        "deviceClass": "power",
+        "stateClass": 1,
+        "legacyLastResetType": 0,
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceId": 0
+      },
+      "state": 0
+    },
+    {
+      "type": "Sensor",
+      "config": {
+        "objectId": "air_conditioner_indoor_humidity",
+        "key": 2854408378,
+        "name": "Air Conditioner Indoor Humidity",
+        "icon": "mdi:water-percent",
+        "unitOfMeasurement": "%",
+        "accuracyDecimals": 0,
+        "forceUpdate": false,
+        "deviceClass": "humidity",
+        "stateClass": 1,
+        "legacyLastResetType": 0,
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceId": 0
+      },
+      "state": 0
+    },
+    {
+      "type": "Switch",
+      "config": {
+        "objectId": "air_conditioner_beeper",
+        "key": 2737466358,
+        "name": "Air Conditioner Beeper",
+        "icon": "mdi:volume-source",
+        "assumedState": false,
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceClass": "",
+        "deviceId": 0
+      },
+      "state": false
+    },
+    {
+      "type": "Button",
+      "config": {
+        "objectId": "factory_reset",
+        "key": 3740619177,
+        "name": "Factory reset",
+        "icon": "mdi:restart-alert",
+        "disabledByDefault": false,
+        "entityCategory": 1,
+        "deviceClass": "restart",
+        "deviceId": 0
+      }
+    },
+    {
+      "type": "Button",
+      "config": {
+        "objectId": "air_conditioner_display_toggle",
+        "key": 3324932398,
+        "name": "Air Conditioner Display Toggle",
+        "icon": "mdi:theme-light-dark",
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceClass": "",
+        "deviceId": 0
+      }
+    },
+    {
+      "type": "Button",
+      "config": {
+        "objectId": "air_conditioner_swing_step",
+        "key": 2249391380,
+        "name": "Air Conditioner Swing Step",
+        "icon": "mdi:tailwind",
+        "disabledByDefault": false,
+        "entityCategory": 0,
+        "deviceClass": "",
+        "deviceId": 0
+      }
+    }
+  ]
+}

@@ -9,7 +9,7 @@ Follow these steps in order, stopping immediately if any step fails:
 - If `$ARGUMENTS` is empty, stop and ask the user: "Which version bump? (`patch`, `minor`, or `major`)"
 - Verify the git working tree is clean (`git status --porcelain` should be empty). If not, stop and tell the user to commit or stash changes first.
 - Verify we're on the `main` branch.
-- Run `npm run lint`, `npm run build`, and `npm test`. If any fail, stop.
+- Run `npm run lint`, `npm run typecheck`, `npm run build`, and `npm test`. If any fail, stop.
 
 ## 2. Bump version
 
